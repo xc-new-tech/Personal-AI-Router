@@ -1,0 +1,47 @@
+{
+    "engine": "omlx",
+    "display_name": "oMLX",
+    "manifest_version": 1,
+    "platforms": {
+        "darwin/arm64": {
+            "detect": [
+                "/Applications/oMLX.app/Contents/MacOS/oMLX",
+                "~/Applications/oMLX.app/Contents/MacOS/oMLX"
+            ],
+            "runtime": {
+                "mode": "external",
+                "port": 8123,
+                "ready": {
+                    "http": "http://127.0.0.1:{port}/v1/models",
+                    "headers": {
+                        "Authorization": "Bearer {api_key}"
+                    },
+                    "timeout_s": 5
+                },
+                "health": {
+                    "http": "http://127.0.0.1:{port}/v1/models",
+                    "headers": {
+                        "Authorization": "Bearer {api_key}"
+                    },
+                    "interval_s": 15
+                }
+            }
+        }
+    },
+    "actions": {
+        "list_models": {
+            "description": "List models served by oMLX (OpenAI-compatible /v1/models).",
+            "http": {
+                "method": "GET",
+                "path": "/v1/models",
+                "headers": {
+                    "Authorization": "Bearer {api_key}"
+                }
+            },
+            "result": {
+                "array": "data",
+                "field": "id"
+            }
+        }
+    }
+}

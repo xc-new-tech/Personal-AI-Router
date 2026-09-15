@@ -159,6 +159,12 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 		}
 		return nil
 	}
+	if rt.modeOrDefault() == "external" {
+		// Reaching here means the probe did not identify the engine on this
+		// port, and external mode has nothing to launch. Say who owns the
+		// lifecycle rather than reporting a generic start failure.
+		return fmt.Errorf("engine %q is externally managed and is not answering on port %d: start it in its own application or service manager, then retry", engine, port)
+	}
 	if presence.Occupied && rt.modeOrDefault() == "process" {
 		return fmt.Errorf("cannot start engine %q on port %d: the port is occupied by a service that did not identify as %s", engine, port, st.manifest.DisplayName)
 	}
@@ -381,6 +387,14 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 	port := st.port
 	adopted := st.adopted
 	binPath := st.binPath
+	if mode == "external" {
+		st.mu.Unlock()
+		// The reclaim path below exists for PAIR-owned orphans on our own
+		// port. An external engine is never ours to reclaim, so refuse
+		// plainly instead of falling through to a PID kill.
+		e.emitState(engine)
+		return fmt.Errorf("cannot stop engine %q: its lifecycle is externally managed; stop it in its own application or service manager", engine)
+	}
 	if mode != "command" && proc == nil {
 		st.mu.Unlock()
 		if adopted {
@@ -713,6 +727,13 @@ func (e *Executor) StopAll() {
 		if err != nil {
 			continue
 		}
+		// An externally managed engine outlives PAIR by design — it belongs to
+		// the user's menu-bar app or the box's service manager. Attempting a
+		// stop here can only fail, and the failure reads as a shutdown fault
+		// rather than the correct no-op it actually is.
+		if st.plat.Runtime.modeOrDefault() == "external" {
+			continue
+		}
 		wg.Add(1)
 		go func(st *engineState, n string) {
 			defer wg.Done()
@@ -810,6 +831,9 @@ func (e *Executor) probe(ctx context.Context, p *Probe, port int) bool {
 		req, err := http.NewRequestWithContext(pctx, http.MethodGet, u, nil)
 		if err != nil {
 			return false
+		}
+		for name, value := range p.Headers {
+			req.Header.Set(name, value)
 		}
 		req.Header.Set(engineIdentityProbeHeader, "1")
 		resp, err := e.client.Do(req)

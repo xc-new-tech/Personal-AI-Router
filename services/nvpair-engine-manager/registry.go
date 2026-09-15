@@ -37,6 +37,11 @@ var allowedPlaceholders = map[string]bool{
 	"download":    true,
 	"install_dir": true,
 	"models_dir":  true,
+	// api_key is resolved at manifest load from the per-engine environment
+	// variable (see resolveHeaderSecrets), never from the manifest file — an
+	// engine credential must not live in a bundled manifest under version
+	// control. It is only valid inside a headers value.
+	"api_key": true,
 }
 
 var placeholderRe = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
@@ -112,6 +117,14 @@ type Fetch struct {
 //   - "command": the engine is a daemon brought up/down by commands
 //     (e.g. LM Studio's `lms`); liveness = the readiness/health probe,
 //     and Stop.Cmd brings it down.
+//   - "external": the engine's lifecycle belongs to something else entirely
+//     — a menu-bar app the user drives, or a service under supervisord/Docker
+//     on a shared box. PAIR detects it, probes it, lists its models and routes
+//     to it, but never starts, stops, installs or uninstalls it. Liveness =
+//     the readiness/health probe; there is no process handle and no install
+//     directory. Use this for an engine whose launch flags are owned by its
+//     operator (vLLM/SGLang tuned for a specific box) where PAIR taking over
+//     the lifecycle would be actively harmful.
 type Runtime struct {
 	Mode  string            `json:"mode,omitempty"`
 	Bin   string            `json:"bin,omitempty"`
@@ -144,6 +157,12 @@ type Probe struct {
 	Status    int    `json:"status,omitempty"` // expected HTTP status (default 200)
 	TimeoutS  int    `json:"timeout_s,omitempty"`
 	IntervalS int    `json:"interval_s,omitempty"`
+	// Headers are sent with an HTTP probe. An engine that requires
+	// authentication (e.g. oMLX) answers an unauthenticated probe with 401,
+	// which would read as "down" rather than "healthy but guarded". Use
+	// {api_key} for the credential; it is substituted at load from the
+	// per-engine environment variable and never stored in the manifest.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // StopSpec is how to terminate the engine. Default is a graceful
@@ -223,6 +242,10 @@ type ActionHTTP struct {
 	Method     string          `json:"method"`
 	Path       string          `json:"path"`
 	BodySchema json.RawMessage `json:"body_schema,omitempty"`
+	// Headers are sent with the action request. Use {api_key} for a
+	// credential; it is substituted at load from the per-engine environment
+	// variable (see resolveHeaderSecrets) so no secret lives in the manifest.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // ModeOrDefault returns the effective install mode ("user" when unset).
@@ -349,8 +372,80 @@ func (r *Registry) addManifest(src string, data []byte) (string, error) {
 	if err := m.Validate(); err != nil {
 		return "", fmt.Errorf("%s: %w", src, err)
 	}
+	resolveHeaderSecrets(&m)
 	r.engines[m.Engine] = &m
 	return m.Engine, nil
+}
+
+// engineAPIKeyEnv is the environment variable an engine's credential is read
+// from: NVPAIR_<ENGINE>_API_KEY, with the engine name upper-cased and any
+// character outside [A-Z0-9] folded to "_" (so "lm-studio" => LM_STUDIO).
+func engineAPIKeyEnv(engine string) string {
+	var b strings.Builder
+	b.WriteString("NVPAIR_")
+	for _, r := range strings.ToUpper(engine) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	b.WriteString("_API_KEY")
+	return b.String()
+}
+
+// resolveHeaderSecrets substitutes {api_key} in every headers map with the
+// engine's credential from the environment.
+//
+// The credential is deliberately not expressible in the manifest itself: the
+// bundled manifests ship inside the binary and live in version control, so a
+// literal key there would be published. Resolving at load keeps the secret in
+// process memory only.
+//
+// A header whose {api_key} cannot be resolved is dropped rather than sent with
+// an empty credential — an engine rejecting a blank bearer token reports the
+// same 401 as a wrong one, which hides the real cause. Dropping it, and saying
+// so once in the log, makes the missing configuration the visible failure.
+func resolveHeaderSecrets(m *Manifest) {
+	env := engineAPIKeyEnv(m.Engine)
+	key := strings.TrimSpace(os.Getenv(env))
+
+	resolve := func(headers map[string]string, where string) map[string]string {
+		if len(headers) == 0 {
+			return headers
+		}
+		out := make(map[string]string, len(headers))
+		for name, value := range headers {
+			if !strings.Contains(value, "{api_key}") {
+				out[name] = value
+				continue
+			}
+			if key == "" {
+				slog.Warn("engine header dropped: credential not set",
+					"engine", m.Engine, "header", name, "where", where, "env", env)
+				continue
+			}
+			out[name] = strings.ReplaceAll(value, "{api_key}", key)
+		}
+		return out
+	}
+
+	for pk, plat := range m.Platforms {
+		if plat.Runtime.Ready != nil {
+			plat.Runtime.Ready.Headers = resolve(plat.Runtime.Ready.Headers, "runtime.ready")
+		}
+		if plat.Runtime.Health != nil {
+			plat.Runtime.Health.Headers = resolve(plat.Runtime.Health.Headers, "runtime.health")
+		}
+		m.Platforms[pk] = plat
+	}
+	for an, act := range m.Actions {
+		if act.HTTP == nil {
+			continue
+		}
+		act.HTTP.Headers = resolve(act.HTTP.Headers, "action "+an)
+		m.Actions[an] = act
+	}
 }
 
 // LoadOverrideDir overlays per-user manifests from a config directory onto
@@ -577,8 +672,22 @@ func (p *Platform) validate(key string) error {
 		if len(p.Runtime.Start) == 0 {
 			return fmt.Errorf("platform %q: runtime.start is required in command mode", key)
 		}
+	case "external":
+		// External mode owns no lifecycle, so a launch spec would be a lie
+		// about what PAIR will do. Reject it rather than silently ignore it.
+		if strings.TrimSpace(p.Runtime.Bin) != "" || len(p.Runtime.Start) > 0 {
+			return fmt.Errorf("platform %q: runtime.bin/runtime.start are not allowed in external mode (PAIR never launches an externally managed engine)", key)
+		}
+		// A probe is the only liveness signal available without a process
+		// handle. Without one the engine could never be seen as running.
+		if p.Runtime.Ready == nil && p.Runtime.Health == nil {
+			return fmt.Errorf("platform %q: external mode requires runtime.ready or runtime.health (the probe is the only liveness signal)", key)
+		}
+		if p.Install != nil || p.Uninstall != nil {
+			return fmt.Errorf("platform %q: install/uninstall are not allowed in external mode", key)
+		}
 	default:
-		return fmt.Errorf("platform %q: runtime.mode %q invalid (want \"process\" or \"command\")", key, p.Runtime.Mode)
+		return fmt.Errorf("platform %q: runtime.mode %q invalid (want \"process\", \"command\", or \"external\")", key, p.Runtime.Mode)
 	}
 	if p.Install != nil {
 		if len(p.Install.Script) > 0 && (p.Install.Fetch != nil || len(p.Install.Run) > 0) {
@@ -736,6 +845,13 @@ func (m *Manifest) templatedStrings() []string {
 			out = append(out, act.RemovePath.Root)
 			// Path may template caller params (e.g. {model}); validated at call time.
 		}
+		if act.HTTP != nil {
+			// Headers, unlike http.path, template no caller params, so they
+			// are statically checkable here.
+			for _, v := range act.HTTP.Headers {
+				out = append(out, v)
+			}
+		}
 	}
 	// Action http.path / cmd are resolved from runtime params (e.g.
 	// {model}), so they're validated at call time, not statically here.
@@ -746,7 +862,11 @@ func probeStrings(p *Probe) []string {
 	if p == nil {
 		return nil
 	}
-	return []string{p.HTTP, p.TCP}
+	out := []string{p.HTTP, p.TCP}
+	for _, v := range p.Headers {
+		out = append(out, v)
+	}
+	return out
 }
 
 // PlatformFor returns the platform block for the given goos/goarch.

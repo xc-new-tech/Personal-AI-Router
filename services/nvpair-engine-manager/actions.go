@@ -124,6 +124,9 @@ func (e *Executor) dispatchAction(ctx context.Context, st *engineState, engine, 
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	for name, value := range act.HTTP.Headers {
+		req.Header.Set(name, value)
+	}
 	req.Header.Set(engineIdentityProbeHeader, "1")
 	client := e.client
 	if engine == "ollama" && action == "run_model" && e.ollamaLoadClient != nil {
