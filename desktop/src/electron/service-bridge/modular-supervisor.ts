@@ -895,6 +895,7 @@ class ModularSupervisor {
         await subscribe('discovery:subscribe', 'subscribe to broker discovery')
         await subscribe('proxy:subscribe', 'subscribe to broker ollama-proxy relay')
         await subscribe('lmstudio-proxy:subscribe', 'subscribe to broker lmstudio-proxy relay')
+        await subscribe('openai-proxy:subscribe', 'subscribe to broker openai-proxy relay')
         // Engine events are opt-in and replay no baseline — subscribe then hydrate.
         await subscribe('engine:subscribe', 'subscribe to broker engine relay')
         await subscribe('workloads:subscribe', 'subscribe to broker workloads stream')
@@ -1333,13 +1334,20 @@ class ModularSupervisor {
         this.readinessWaiters.clear()
     }
 
-    /** Rewrite broker `proxy:`/`lmstudio-proxy:` relay frames into proxy-source events. */
+    /** Rewrite broker `proxy:`/`lmstudio-proxy:`/`openai-proxy:` relay frames into proxy-source events. */
     private normalizeBrokerProxy(notification: JsonRpcNotification): JsonRpcNotification {
         if (notification.source !== 'broker') return notification
         if (notification.method.startsWith('lmstudio-proxy:')) {
             return {
                 source: 'lmstudio-proxy',
                 method: notification.method.slice('lmstudio-proxy:'.length),
+                params: notification.params
+            }
+        }
+        if (notification.method.startsWith('openai-proxy:')) {
+            return {
+                source: 'openai-proxy',
+                method: notification.method.slice('openai-proxy:'.length),
                 params: notification.params
             }
         }

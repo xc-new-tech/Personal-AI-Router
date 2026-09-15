@@ -209,7 +209,10 @@ async function discoverTargets(executable: string): Promise<DemoTarget[]> {
     const bridge = getModularBridgeState()
     const reachable = DEMO_ENGINE_PROBES.map(probe => ({
         backend: probe.backend,
-        port: bridge.getProxyPort(probe.proxyEngine)
+        port:
+            probe.proxyEngine === 'openai'
+                ? bridge.getOpenAIProxyPort()
+                : bridge.getProxyPort(probe.proxyEngine)
     })).filter(
         (probe): probe is { backend: DispatcherBackend; port: number } => probe.port !== null
     )
@@ -366,7 +369,7 @@ export async function startInferenceDemo(): Promise<DemoState> {
         // Deliberately names no port: the proxies own their listeners, and
         // quoting a number here would be the same mistake as hardcoding one.
         throw new Error(
-            'No local inference engine exposed a text-generation model. Start Ollama or LM Studio, wait for it to appear in Settings, and try again.'
+            'No local inference engine exposed a text-generation model. Start an engine (Ollama, LM Studio, oMLX, vLLM or SGLang), wait for it to appear in Settings, and try again.'
         )
     }
 

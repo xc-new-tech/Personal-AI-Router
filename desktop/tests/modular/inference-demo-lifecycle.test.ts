@@ -50,6 +50,14 @@ const proxyPorts: Record<'ollama' | 'lm-studio', number | null> = {
     'lm-studio': 1234
 }
 
+/**
+ * The OpenAI facade's port, reported separately from proxyPorts because it
+ * fronts three engines and so has no single ProxyEngine key. Null by default:
+ * these tests assert the two-engine baseline, and a third probe would change
+ * every expected request count.
+ */
+let openaiProxyPort: number | null = null
+
 /** Model inventory each probe returns. Mutable so a test can return none. */
 let inventory: unknown = [{ name: 'demo-model', type: 'llm' }]
 
@@ -114,7 +122,8 @@ vi.mock('electron', () => ({
 
 vi.mock('@/electron/service-bridge/modular-state', () => ({
     getModularBridgeState: () => ({
-        getProxyPort: (engine: 'ollama' | 'lm-studio') => proxyPorts[engine]
+        getProxyPort: (engine: 'ollama' | 'lm-studio') => proxyPorts[engine],
+        getOpenAIProxyPort: () => openaiProxyPort
     })
 }))
 
@@ -138,6 +147,7 @@ beforeEach(() => {
     inventory = [{ name: 'demo-model', type: 'llm' }]
     proxyPorts.ollama = 11434
     proxyPorts['lm-studio'] = 1234
+    openaiProxyPort = null
     Object.assign(process.env, POISONED_ENV)
     vi.useFakeTimers()
 })
@@ -200,6 +210,30 @@ describe('inference demo lifecycle', () => {
         expect(spawned.length).toBeGreaterThan(0)
         for (const child of spawned) {
             expect(PROXY_FACADE_PORTS).toContain(portOf(child))
+        }
+    })
+
+    // Regression: the demo only knew the two per-engine facades, so a node whose
+    // only engine was oMLX/vLLM/SGLang was told to "Start Ollama or LM Studio"
+    // even while PAIR was routing inference to it perfectly well.
+    it('targets the OpenAI facade once it reports a port', async () => {
+        openaiProxyPort = 11436
+        await startInferenceDemo()
+        await vi.advanceTimersByTimeAsync(70_000)
+
+        expect(spawned.map(portOf)).toContain(11436)
+    })
+
+    it('runs on the OpenAI facade alone when it is the only one up', async () => {
+        proxyPorts.ollama = null
+        proxyPorts['lm-studio'] = null
+        openaiProxyPort = 11436
+        await startInferenceDemo()
+        await vi.advanceTimersByTimeAsync(70_000)
+
+        expect(spawned.length).toBeGreaterThan(0)
+        for (const child of spawned) {
+            expect(portOf(child)).toBe(11436)
         }
     })
 

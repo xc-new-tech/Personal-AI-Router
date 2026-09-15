@@ -53,11 +53,20 @@ export const DEMO_REQUEST_TIMEOUT_SECONDS = 120
  */
 export const DEMO_ENGINE_PROBES: readonly {
     backend: DispatcherBackend
-    /** Engine key used by the broker's proxy port registry. */
-    proxyEngine: 'ollama' | 'lm-studio'
+    /**
+     * Which facade to ask for a port. 'openai' is the OpenAI-compatible facade
+     * fronting oMLX/vLLM/SGLang; it is not a ProxyEngine because it maps to no
+     * single engine, so its port comes from getOpenAIProxyPort instead.
+     */
+    proxyEngine: 'ollama' | 'lm-studio' | 'openai'
 }[] = [
     { backend: 'ollama', proxyEngine: 'ollama' },
-    { backend: 'lmstudio', proxyEngine: 'lm-studio' }
+    { backend: 'lmstudio', proxyEngine: 'lm-studio' },
+    // The dispatcher's 'lmstudio' backend is the OpenAI protocol — it posts to
+    // /v1/chat/completions and reads models from /v1/models, which is exactly
+    // what this facade serves. Reusing it avoids a redundant backend in the Go
+    // binary that would differ from 'lmstudio' in name only.
+    { backend: 'lmstudio', proxyEngine: 'openai' }
 ]
 
 /**

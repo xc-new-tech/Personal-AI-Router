@@ -901,6 +901,9 @@ class ModularBridgeState {
     // we never fabricate a default — an unknown port surfaces as null, not a
     // guess. `ollama` is the `ollama-proxy`, `lm-studio` is the `lmstudio-proxy`.
     private proxyPorts: Record<ProxyEngine, number> = { ollama: 0, 'lm-studio': 0 }
+    // The OpenAI facade's bound port; see getOpenAIProxyPort for why it is not
+    // in proxyPorts.
+    private openaiProxyPort = 0
     private selfId: string | null = null
     /**
      * Authoritative local-engine facts from `nvpair-engine-manager`, keyed by
@@ -1104,6 +1107,20 @@ class ModularBridgeState {
     getProxyPort(engine: ProxyEngine): number | null {
         const port = this.proxyPorts[engine]
         return port > 0 ? port : null
+    }
+
+    /**
+     * Bound port of the OpenAI facade, or null if it has not reported ready.
+     *
+     * Tracked apart from `proxyPorts` because that map is keyed by ProxyEngine —
+     * one engine per facade. This facade fronts three (oMLX, vLLM, SGLang), so it
+     * has no single ProxyEngine to be keyed by, and forcing one would either
+     * misreport the engine or require the whole proxy plane to stop being
+     * per-engine. A dedicated field keeps that refactor out of the way of simply
+     * knowing where the facade listens.
+     */
+    getOpenAIProxyPort(): number | null {
+        return this.openaiProxyPort > 0 ? this.openaiProxyPort : null
     }
 
     getEngineInitialState(): EngineInitialState {
@@ -2287,9 +2304,27 @@ class ModularBridgeState {
             this.handleProxyNotification(notification, 'lm-studio')
             return
         }
+        if (notification.source === 'openai-proxy') {
+            this.handleOpenAIProxyNotification(notification)
+            return
+        }
         if (notification.source === 'broker') {
             this.handleBrokerNotification(notification)
         }
+    }
+
+    /**
+     * The OpenAI facade reports the same `ready` frame as its siblings, but it
+     * maps to no single engine, so only its port is recorded — no per-engine
+     * status is emitted from here.
+     */
+    private handleOpenAIProxyNotification(notification: JsonRpcNotification): void {
+        if (notification.method !== 'ready') return
+        const params = objectValue(notification.params)
+        const nextPort = numberValue(params?.port)
+        // Same rule as the other proxies: keep the last known port rather than
+        // guessing when `ready` carries none.
+        if (nextPort > 0) this.openaiProxyPort = nextPort
     }
 
     private handleProxyNotification(notification: JsonRpcNotification, engine: ProxyEngine): void {
