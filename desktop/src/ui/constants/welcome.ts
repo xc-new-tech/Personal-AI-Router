@@ -11,9 +11,15 @@ export const WELCOME_STEP_HEADINGS = ["Welcome, let's get you set up", 'Install 
 
 export const WELCOME_STEP_SUB_HEADINGS = ['', 'You can update later by clicking on a node'] as const
 
+// Externally managed engines are false because PAIR cannot install them, and
+// getWelcomeEngineCandidates already drops any engine with an empty hasInstall
+// — these entries exist to satisfy the exhaustive Record, not to be offered.
 export const WELCOME_ENGINE_DEFAULT_SELECTED: Record<EngineType, boolean> = {
     ollama: true,
-    'lm-studio': true
+    'lm-studio': true,
+    omlx: false,
+    vllm: false,
+    sglang: false
 }
 
 export function getWelcomeEngineCandidates(os: PlatformDisplayName): EngineType[] {

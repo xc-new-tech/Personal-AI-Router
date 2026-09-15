@@ -577,6 +577,39 @@ func (n DirectoryNode) EngineModels(engine string) []string {
 	return n.Models
 }
 
+// EnginesModels returns the union of the models served by any of the named
+// engines on this node, preserving the caller's engine order and dropping
+// duplicates (two engines on one node can serve the same model name).
+//
+// It exists for a consumer that fronts a family of engines rather than one:
+// oMLX, vLLM and SGLang all speak the OpenAI API, so a single OpenAI-compatible
+// facade ranks model owners across all three at once. Calling EngineModels per
+// engine and concatenating would be the same thing minus the de-duplication,
+// but would also repeat the attribution-fallback decision once per engine and
+// so return the flat union N times over for an unattributed peer.
+//
+// The fallback rule is inherited exactly: attribution present means each named
+// engine contributes only its own list (an engine absent from the map serves
+// nothing), and only a node with no attribution at all falls back to the flat
+// Models union — once, not once per engine.
+func (n DirectoryNode) EnginesModels(engines ...string) []string {
+	if n.ModelsByEngine == nil {
+		return n.Models
+	}
+	var out []string
+	seen := make(map[string]bool)
+	for _, engine := range engines {
+		for _, m := range n.ModelsByEngine[engine] {
+			if seen[m] {
+				continue
+			}
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 // SubscribeParams filters a subscription to nodes advertising any of the listed
 // services; an empty list subscribes to all nodes.
 type SubscribeParams struct {

@@ -12,9 +12,12 @@ import (
 	"nvpair-shared/schedulerwire"
 )
 
-// schedulerEngines is the fixed set of engine-specific output contracts. Both
-// receive the same node-wide ranking because their work shares node resources.
-var schedulerEngines = []string{"ollama", "lmstudio"}
+// schedulerEngines is the fixed set of engine-specific output contracts. They
+// all receive the same node-wide ranking because their work shares node
+// resources — a node busy serving one engine is busy for every other engine on
+// it, which is doubly true of the externally managed engines: oMLX, vLLM and
+// SGLang commonly sit on a box already running other GPU work.
+var schedulerEngines = []string{"ollama", "lmstudio", "omlx", "vllm", "sglang"}
 
 // NodeRank is retained as the scheduler's public status type while the wire
 // definition is shared with the broker and proxies.

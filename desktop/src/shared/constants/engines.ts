@@ -9,23 +9,60 @@ import { EngineType, ModelExpiry } from '@/shared/types/engines'
 // never-enabled placeholders; they were removed with the chat window, which was
 // their only in-app consumer. Adding an engine back means shipping its manifest
 // first -- an engine row without one renders commands that fail with `-32000`.
-export const EngineTypes = ['ollama', 'lm-studio'] as const
+//
+// oMLX, vLLM and SGLang ship external-mode manifests (runtime.mode "external"):
+// PAIR discovers, probes and lists them, but never installs, starts or stops
+// them, because their lifecycle belongs to a menu-bar app or to the host's own
+// service manager. Their ids match the engine-manager engine names exactly, so
+// unlike lm-studio they need no entry in the id translation.
+export const EngineTypes = ['ollama', 'lm-studio', 'omlx', 'vllm', 'sglang'] as const
 
 // Kept as a distinct export so a future engine can ship behind it rather than
 // appearing the moment its type exists.
-export const EnabledEngineTypes: EngineType[] = ['ollama', 'lm-studio'] as const
+export const EnabledEngineTypes: EngineType[] = [
+    'ollama',
+    'lm-studio',
+    'omlx',
+    'vllm',
+    'sglang'
+] as const
+
+// ExternallyManagedEngines are the engines whose manifests use runtime.mode
+// "external". PAIR must not offer Install/Start/Stop for them: engine-manager
+// refuses those operations by design, so an enabled button could only produce
+// an error the user has no way to act on.
+export const ExternallyManagedEngines: EngineType[] = ['omlx', 'vllm', 'sglang'] as const
+
+/** True when PAIR observes an engine's lifecycle but does not control it. */
+export function isExternallyManaged(engine: EngineType): boolean {
+    return ExternallyManagedEngines.includes(engine)
+}
 
 export const EngineSources = ['bundled', 'detected', 'installed'] as const
 
 export const EngineDisplayNames: Record<EngineType, string> = {
     ollama: 'Ollama',
-    'lm-studio': 'LM Studio'
+    'lm-studio': 'LM Studio',
+    omlx: 'oMLX',
+    vllm: 'vLLM',
+    sglang: 'SGLang'
 } as const
 
 /** Default docs/install URLs for built-in backends. Single source of truth for UI and adapter buildInfo(). */
 export const EngineDefaultLinks: Record<EngineType, { docsUrl: string; installUrl: string }> = {
     ollama: { docsUrl: 'https://docs.ollama.com/', installUrl: 'https://ollama.com/download' },
-    'lm-studio': { docsUrl: 'https://lmstudio.ai/docs', installUrl: 'https://lmstudio.ai/' }
+    'lm-studio': { docsUrl: 'https://lmstudio.ai/docs', installUrl: 'https://lmstudio.ai/' },
+    // An externally managed engine has no in-app install path, so installUrl is
+    // where the user obtains it themselves rather than something PAIR drives.
+    omlx: { docsUrl: 'https://omlx.ai/', installUrl: 'https://github.com/jundot/omlx/releases' },
+    vllm: {
+        docsUrl: 'https://docs.vllm.ai/',
+        installUrl: 'https://docs.vllm.ai/en/latest/getting_started/installation.html'
+    },
+    sglang: {
+        docsUrl: 'https://docs.sglang.ai/',
+        installUrl: 'https://docs.sglang.ai/start/install.html'
+    }
 } as const
 
 export const ModelItemStatuses = ['idle', 'loading', 'loaded', 'ejecting', 'pulling'] as const

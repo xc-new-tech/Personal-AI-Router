@@ -245,3 +245,36 @@ func TestValidateTXTSize(t *testing.T) {
 		t.Error("oversized TXT entry not flagged")
 	}
 }
+
+// EnginesModels is the multi-engine form used by a facade that fronts a family
+// of engines sharing one API (oMLX, vLLM and SGLang all speak OpenAI).
+func TestEnginesModels(t *testing.T) {
+	attributed := DirectoryNode{
+		Models: []string{"a", "b", "c", "d"},
+		ModelsByEngine: map[string][]string{
+			"omlx":   {"a", "b"},
+			"vllm":   {"b", "c"}, // "b" overlaps omlx: the union must not repeat it
+			"ollama": {"d"},      // not asked for: must not leak in
+		},
+	}
+
+	got := attributed.EnginesModels("omlx", "vllm")
+	want := []string{"a", "b", "c"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("EnginesModels(omlx, vllm) = %v, want %v", got, want)
+	}
+
+	// An engine with no entry authoritatively serves nothing; asking for it
+	// must not widen the result to the flat union.
+	if got := attributed.EnginesModels("sglang"); len(got) != 0 {
+		t.Errorf("EnginesModels(sglang) = %v, want empty", got)
+	}
+
+	// No attribution at all: fall back to the flat union exactly once, not
+	// once per engine named.
+	unattributed := DirectoryNode{Models: []string{"a", "b"}}
+	got = unattributed.EnginesModels("omlx", "vllm", "sglang")
+	if !reflect.DeepEqual(got, []string{"a", "b"}) {
+		t.Errorf("unattributed EnginesModels = %v, want [a b]", got)
+	}
+}

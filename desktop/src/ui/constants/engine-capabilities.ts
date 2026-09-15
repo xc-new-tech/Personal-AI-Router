@@ -43,5 +43,56 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         // server. Deleting therefore interrupts inference and needs a warning.
         restartsOnModelDelete: true,
         engineHub: { label: 'LM Studio', url: 'https://lmstudio.ai/models' }
+    },
+    // oMLX, vLLM and SGLang are externally managed (manifest runtime.mode
+    // "external"). PAIR reads their model list over the OpenAI /v1/models
+    // surface and routes to them, but owns none of their lifecycle: no install,
+    // no start/stop, no pull, no delete. Every capability below is therefore
+    // off, and `hasInstall: []` is what removes the Install affordance on every
+    // platform — engine-manager refuses these operations by design, so an
+    // enabled button could only surface an error the user cannot act on.
+    //
+    // Their model libraries are managed where the engine is: the oMLX app for
+    // oMLX, and the model path each server was launched with for vLLM/SGLang.
+    // That is also why there is no engineHub — PAIR has nowhere to send the
+    // user to add a model it cannot install.
+    omlx: {
+        hasExpiry: false,
+        hasEject: false,
+        hasInstall: [],
+        hasEnginePort: false,
+        hasInstallPath: false,
+        hasProxyWebUI: false,
+        hasPreferredNode: false,
+        hasCrashAlert: false,
+        hasModelSearchOnlyWhenRunning: true,
+        modelOpsWhenStopped: false,
+        hasDeleteModel: false
+    },
+    vllm: {
+        hasExpiry: false,
+        hasEject: false,
+        hasInstall: [],
+        hasEnginePort: false,
+        hasInstallPath: false,
+        hasProxyWebUI: false,
+        hasPreferredNode: false,
+        hasCrashAlert: false,
+        hasModelSearchOnlyWhenRunning: true,
+        modelOpsWhenStopped: false,
+        hasDeleteModel: false
+    },
+    sglang: {
+        hasExpiry: false,
+        hasEject: false,
+        hasInstall: [],
+        hasEnginePort: false,
+        hasInstallPath: false,
+        hasProxyWebUI: false,
+        hasPreferredNode: false,
+        hasCrashAlert: false,
+        hasModelSearchOnlyWhenRunning: true,
+        modelOpsWhenStopped: false,
+        hasDeleteModel: false
     }
 }
