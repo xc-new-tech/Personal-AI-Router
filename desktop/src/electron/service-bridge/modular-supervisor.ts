@@ -153,21 +153,37 @@ function booleanValue(value: JsonValue | undefined): boolean {
  * Extract model names from a `nvpair-engine-manager` `list_models` action result.
  * The action returns the engine's raw response, which differs per engine:
  * Ollama's `/api/tags` yields `{ models: [{ name }] }`, LM Studio's native
- * `/api/v1/models` yields `{ models: [{ key }] }`. A present empty array is
- * authoritative; a missing or malformed inventory throws so callers retain or
+ * `/api/v1/models` yields `{ models: [{ key }] }`, and the OpenAI-compatible
+ * engines (oMLX, vLLM, SGLang) yield `{ data: [{ id }] }`. A present empty array
+ * is authoritative; a missing or malformed inventory throws so callers retain or
  * fall back to their last-good source instead of silently clearing it.
+ *
+ * This mirrors the manifest's `result` extractor ({array, field}) rather than
+ * replacing it: engine-manager normalizes for its own callers, but the broker
+ * receives the engine's raw action result and has to recognize the same shapes.
  */
 export function parseListModelNames(result: JsonValue | undefined): string[] {
     const obj = objectValue(result)
     if (!obj) throw new Error('list_models returned a non-object response')
-    const names: string[] = []
-    if (Array.isArray(obj.models)) {
-        for (const entry of obj.models) {
+    // [array field, name fields] per engine family, in the order tried.
+    const shapes: Array<[JsonValue | undefined, Array<'name' | 'key' | 'id'>]> = [
+        [obj.models, ['name', 'key']],
+        [obj.data, ['id']]
+    ]
+    for (const [rows, fields] of shapes) {
+        if (!Array.isArray(rows)) continue
+        const names: string[] = []
+        for (const entry of rows) {
             const row = objectValue(entry)
-            const name = stringValue(row?.name) || stringValue(row?.key)
-            if (name) names.push(name)
+            for (const field of fields) {
+                const name = stringValue(row?.[field])
+                if (name) {
+                    names.push(name)
+                    break
+                }
+            }
         }
-        if (obj.models.length > 0 && names.length === 0) {
+        if (rows.length > 0 && names.length === 0) {
             throw new Error('list_models returned no usable model names')
         }
         return names
