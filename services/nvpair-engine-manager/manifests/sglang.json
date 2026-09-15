@@ -1,0 +1,63 @@
+{
+    "engine": "sglang",
+    "display_name": "SGLang",
+    "manifest_version": 1,
+    "platforms": {
+        "linux/amd64": {
+            "runtime": {
+                "mode": "external",
+                "port": 30000,
+                "ready": {
+                    "http": "http://127.0.0.1:{port}/health",
+                    "headers": {
+                        "Authorization": "Bearer {api_key}"
+                    },
+                    "timeout_s": 5
+                },
+                "health": {
+                    "http": "http://127.0.0.1:{port}/health",
+                    "headers": {
+                        "Authorization": "Bearer {api_key}"
+                    },
+                    "interval_s": 15
+                }
+            }
+        },
+        "linux/arm64": {
+            "runtime": {
+                "mode": "external",
+                "port": 30000,
+                "ready": {
+                    "http": "http://127.0.0.1:{port}/health",
+                    "headers": {
+                        "Authorization": "Bearer {api_key}"
+                    },
+                    "timeout_s": 5
+                },
+                "health": {
+                    "http": "http://127.0.0.1:{port}/health",
+                    "headers": {
+                        "Authorization": "Bearer {api_key}"
+                    },
+                    "interval_s": 15
+                }
+            }
+        }
+    },
+    "actions": {
+        "list_models": {
+            "description": "List models served by SGLang (OpenAI-compatible /v1/models).",
+            "http": {
+                "method": "GET",
+                "path": "/v1/models",
+                "headers": {
+                    "Authorization": "Bearer {api_key}"
+                }
+            },
+            "result": {
+                "array": "data",
+                "field": "id"
+            }
+        }
+    }
+}

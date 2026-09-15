@@ -154,7 +154,13 @@ func (e *Executor) reconcilePresence(ctx context.Context, engine string, st *eng
 	// A command-mode engine needs its control CLI. A compatible HTTP endpoint
 	// alone (for example another OpenAI server on LM Studio's port) is not an
 	// installation and must not suppress the installer.
-	if !pathInstalled && st.plat.Runtime.modeOrDefault() != "process" {
+	//
+	// External mode is exempt: it ships no installer to suppress, and the
+	// engine may have no detectable image at all — SGLang is launched as
+	// `python -m sglang.launch_server`, so there is no binary path to look
+	// for. There the reachable endpoint is the only evidence the engine
+	// exists, which is precisely what external mode is built on.
+	if !pathInstalled && st.plat.Runtime.modeOrDefault() == "command" {
 		return presenceResult{}
 	}
 

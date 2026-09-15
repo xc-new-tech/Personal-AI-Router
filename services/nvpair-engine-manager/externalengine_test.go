@@ -214,3 +214,55 @@ func TestBundledOMLXManifest(t *testing.T) {
 		t.Errorf("list_models result = %+v, want the OpenAI {data:[{id}]} shape", act.Result)
 	}
 }
+
+// vLLM and SGLang are the externally managed engines on the Linux nodes. They
+// share oMLX's OpenAI surface, so the same declarative extractor serves all
+// three — this asserts the shared shape rather than restating each manifest.
+func TestBundledExternalEngines(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
+		t.Fatalf("load bundled manifests: %v", err)
+	}
+	for _, tc := range []struct {
+		engine    string
+		port      int
+		platforms []string
+	}{
+		{"omlx", 8123, []string{"darwin/arm64"}},
+		{"vllm", 8000, []string{"linux/amd64", "linux/arm64", "darwin/arm64"}},
+		{"sglang", 30000, []string{"linux/amd64", "linux/arm64"}},
+	} {
+		t.Run(tc.engine, func(t *testing.T) {
+			m, ok := reg.Get(tc.engine)
+			if !ok {
+				t.Fatalf("%s manifest is not bundled", tc.engine)
+			}
+			for _, key := range tc.platforms {
+				parts := strings.SplitN(key, "/", 2)
+				plat, ok := m.PlatformFor(parts[0], parts[1])
+				if !ok {
+					t.Errorf("missing platform %s", key)
+					continue
+				}
+				if got := plat.Runtime.modeOrDefault(); got != "external" {
+					t.Errorf("%s mode = %q, want external", key, got)
+				}
+				if plat.Runtime.Port != tc.port {
+					t.Errorf("%s port = %d, want %d", key, plat.Runtime.Port, tc.port)
+				}
+				// External mode has no process handle, so a missing probe would
+				// leave the engine permanently invisible.
+				if plat.Runtime.Ready == nil || plat.Runtime.Health == nil {
+					t.Errorf("%s must declare both ready and health probes", key)
+				}
+			}
+			act, ok := m.Actions["list_models"]
+			if !ok {
+				t.Fatalf("%s: list_models action missing", tc.engine)
+			}
+			if act.Result == nil || act.Result.Array != "data" || act.Result.Field != "id" {
+				t.Errorf("%s: list_models result = %+v, want the OpenAI {data:[{id}]} shape", tc.engine, act.Result)
+			}
+		})
+	}
+}

@@ -410,7 +410,8 @@ func resolveHeaderSecrets(m *Manifest) {
 	env := engineAPIKeyEnv(m.Engine)
 	key := strings.TrimSpace(os.Getenv(env))
 
-	resolve := func(headers map[string]string, where string) map[string]string {
+	dropped := false
+	resolve := func(headers map[string]string) map[string]string {
 		if len(headers) == 0 {
 			return headers
 		}
@@ -421,8 +422,7 @@ func resolveHeaderSecrets(m *Manifest) {
 				continue
 			}
 			if key == "" {
-				slog.Warn("engine header dropped: credential not set",
-					"engine", m.Engine, "header", name, "where", where, "env", env)
+				dropped = true
 				continue
 			}
 			out[name] = strings.ReplaceAll(value, "{api_key}", key)
@@ -432,10 +432,10 @@ func resolveHeaderSecrets(m *Manifest) {
 
 	for pk, plat := range m.Platforms {
 		if plat.Runtime.Ready != nil {
-			plat.Runtime.Ready.Headers = resolve(plat.Runtime.Ready.Headers, "runtime.ready")
+			plat.Runtime.Ready.Headers = resolve(plat.Runtime.Ready.Headers)
 		}
 		if plat.Runtime.Health != nil {
-			plat.Runtime.Health.Headers = resolve(plat.Runtime.Health.Headers, "runtime.health")
+			plat.Runtime.Health.Headers = resolve(plat.Runtime.Health.Headers)
 		}
 		m.Platforms[pk] = plat
 	}
@@ -443,8 +443,17 @@ func resolveHeaderSecrets(m *Manifest) {
 		if act.HTTP == nil {
 			continue
 		}
-		act.HTTP.Headers = resolve(act.HTTP.Headers, "action "+an)
+		act.HTTP.Headers = resolve(act.HTTP.Headers)
 		m.Actions[an] = act
+	}
+
+	// One line per engine, not per platform block: a manifest carries a block
+	// for every platform it supports, so per-site logging would repeat the same
+	// fact several times for an engine that simply runs without a credential —
+	// the normal case for vLLM and SGLang, which are unauthenticated by default.
+	if dropped {
+		slog.Info("engine credential not configured; authorization header omitted",
+			"engine", m.Engine, "env", env)
 	}
 }
 
