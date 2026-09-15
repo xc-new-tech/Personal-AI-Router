@@ -61,7 +61,9 @@
        在加载时解析，仓库内无明文
 - [x] 6. `schedule.go:17` 的 `schedulerEngines` 加入三个新引擎
 - [x] 7. 前端常量 + `EngineCapabilities` + `welcome`，外部引擎的安装/启停能力全部关闭
-- [ ] 8. `openai-proxy` —— **未做。见下方「proxy 的真实成本」，比原估算大一圈**
+- [x] 8a. `openai-proxy` 模块本体 + 服务键 `oa` + 构建接入（14 个二进制、versions.json、
+       防火墙清单、卸载脚本、契约文档）
+- [ ] 8b. broker / supervisor 接线 —— **未做，见下方「8b 剩余工作」。没有它二进制不会被启动**
 - [x] 9a. PAIR 实跑：五引擎在列，oMLX `installed/running/healthy`，模型进入发现层
 - [ ] 9b. 路由一次真实推理 —— **未做，取决于第 8 项**
 
@@ -116,8 +118,41 @@
 各自的 facade。这与「不接受跨量化路由」的决定天然吻合：模型名已按引擎/量化区分，
 按名路由自然落到正确的引擎。`noderec.EnginesModels` 已为此铺好路。
 
-**当前可用性**：PAIR 能发现、探活、列举三个引擎的模型，UI 能看到它们。
-**但还不能把推理请求路由给它们** —— 那需要第 8 项。
+### 已完成的 proxy 本体
+
+`services/openai-proxy`（约 3500 行，6 个单测）。与两个既有 proxy 的差异：
+
+| | `ollama-proxy` / `lmstudio-proxy` | `openai-proxy` |
+| --- | --- | --- |
+| 服务键 | `ol` / `lm` | `oa` —— 一个键而非每引擎一个 |
+| 本地后端 | 一个 | **每引擎一个**（`backends` map） |
+| 路由候选 | 节点 | 节点 **+ 引擎** |
+| workload 引擎 | 固定常量 | 选中的引擎，未知时 `openai` |
+| 默认端口 | 11434 / 1234 | 11436 |
+
+关键设计：选中的引擎经 `X-NVPAIR-Engine` 头随请求转发，且在 `Director` 里
+**无条件先 Del 再 Set** —— 否则客户端能自带该头操纵对端选哪个引擎。
+归属缺失时只在本地仅有一个健康后端时转发，有两个就明确 503：猜错引擎会用
+另一个模型应答，比直接失败更糟。
+
+### 8b 剩余工作（让它真正被启动）
+
+参照 LM Studio 那一路在 broker 里的接线量（**857 行** / 3 文件）：
+
+- `nvpair-ui-broker`：`openaiProxy *proxyProcess`、supervisor、
+  `--openai-proxy-path` 启动参数、订阅状态、`advertiser.go` 里
+  `registerService(ServiceOpenAI, proxyPort)` + **按三个引擎各调一次**
+  `setProxyLocalBackend`、relay 命名空间 `openai-proxy:`
+- `desktop/src/electron/service-bridge/modular-supervisor.ts`：
+  `proxyEngineFromManagerId()` / `proxyRelayPrefix()` 加入三个引擎、
+  `brokerStartupArgs` 传入新 proxy 路径、bridge 状态
+- 端口所有权比 LM Studio 简单得多：三个引擎都是 external 模式，PAIR 从不移动
+  它们的端口，所以不需要 `lmstudioport.go` 那 445 行的 facade/backend 端口腾挪
+
+### 当前可用性
+
+PAIR 能发现、探活、列举三个引擎的模型，UI 能看到它们，`openai-proxy` 二进制
+已随构建产出。**但 broker 还不会启动它，所以推理请求还路由不过去** —— 那是 8b。
 
 ### 阶段 3 — 集群落地（需单独确认后再做）
 
