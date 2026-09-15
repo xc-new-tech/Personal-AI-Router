@@ -6,6 +6,7 @@ import type { SupportedPlatform } from '@/shared/types/platform'
 export type ModularProcessName =
     | 'proxy'
     | 'lmstudio-proxy'
+    | 'openai-proxy'
     | 'broker'
     | 'node-info'
     | 'scanner'
@@ -70,6 +71,21 @@ export const MODULAR_RUNTIME_BINARIES: ModularRuntimeBinary[] = [
         // access to be reachable.
         processName: 'lmstudio-proxy',
         baseName: 'lmstudio-proxy',
+        args: [],
+        launchOwner: 'broker',
+        needsFirewallAccess: true,
+        optional: true
+    },
+    {
+        // OpenAI-compatible reverse proxy. Unlike the two above it fronts a
+        // family of engines rather than one — oMLX, vLLM and SGLang all speak
+        // the same API, so a single facade can route a request to whichever
+        // node and engine holds the requested model, and clients need only one
+        // endpoint. Supervised like its siblings and relayed under the
+        // `openai-proxy:` namespace; it binds all interfaces, so it needs
+        // firewall access to be reachable.
+        processName: 'openai-proxy',
+        baseName: 'openai-proxy',
         args: [],
         launchOwner: 'broker',
         needsFirewallAccess: true,

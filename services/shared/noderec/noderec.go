@@ -100,13 +100,22 @@ const (
 	// is pin-based mTLS (cluster peers only) because it performs privileged
 	// operations, and it binds only when the node is clustered.
 	ServiceEngineControl ServiceKey = "ec"
+	// ServiceOpenAI is openai-proxy's listen port: one ingress fronting every
+	// engine on this node that speaks the OpenAI API (oMLX, vLLM, SGLang).
+	//
+	// It is a single key rather than one per engine because, like ol and lm, it
+	// advertises the *proxy's* port, not the engine's — a peer reaches this
+	// node's engines through this node's proxy, which then picks the right
+	// local backend by model. Keeping it to one key also matters because the
+	// TXT record these are emitted into is size-limited.
+	ServiceOpenAI ServiceKey = "oa"
 )
 
 // serviceKeyOrder is the deterministic emit order for service ports in TXT.
 var serviceKeyOrder = []ServiceKey{
 	ServiceNodeInfo, ServiceOllama, ServiceLMStudio,
 	ServiceErrors, ServiceWorkload, ServiceCluster, ServiceEngineManager,
-	ServiceEngineControl,
+	ServiceEngineControl, ServiceOpenAI,
 }
 
 // Transport is the connection policy for a service, derived (not advertised).
