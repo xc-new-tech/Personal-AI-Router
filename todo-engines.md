@@ -63,9 +63,9 @@
 - [x] 7. 前端常量 + `EngineCapabilities` + `welcome`，外部引擎的安装/启停能力全部关闭
 - [x] 8a. `openai-proxy` 模块本体 + 服务键 `oa` + 构建接入（14 个二进制、versions.json、
        防火墙清单、卸载脚本、契约文档）
-- [ ] 8b. broker / supervisor 接线 —— **未做，见下方「8b 剩余工作」。没有它二进制不会被启动**
+- [x] 8b. broker / supervisor 接线 —— 已完成，:11436 统一入口可用
 - [x] 9a. PAIR 实跑：五引擎在列，oMLX `installed/running/healthy`，模型进入发现层
-- [ ] 9b. 路由一次真实推理 —— **未做，取决于第 8 项**
+- [x] 9b. **真实推理已跑通**：经 PAIR :11436 路由到 oMLX，2.4s 返回
 
 ### 阶段 2 — vLLM / SGLang ◐ manifest 完成并部分实证
 
@@ -135,24 +135,41 @@
 归属缺失时只在本地仅有一个健康后端时转发，有两个就明确 503：猜错引擎会用
 另一个模型应答，比直接失败更糟。
 
-### 8b 剩余工作（让它真正被启动）
+### 8b broker 接线（已完成）
 
-参照 LM Studio 那一路在 broker 里的接线量（**857 行** / 3 文件）：
+`openaiproxy.go`（231 行）+ broker 字段/启动/RPC 分发 + `--openai-proxy-path`。
+比 LM Studio 那一路（857 行 / 3 文件）小得多，因为**不参与端口所有权博弈**：
+lmstudio-proxy 必须夺取 LM Studio 自己的 :1234 并把真引擎挪走（`lmstudioport.go`
+那 445 行的由来），而这个 facade 不冒充任何人。
 
-- `nvpair-ui-broker`：`openaiProxy *proxyProcess`、supervisor、
-  `--openai-proxy-path` 启动参数、订阅状态、`advertiser.go` 里
-  `registerService(ServiceOpenAI, proxyPort)` + **按三个引擎各调一次**
-  `setProxyLocalBackend`、relay 命名空间 `openai-proxy:`
-- `desktop/src/electron/service-bridge/modular-supervisor.ts`：
-  `proxyEngineFromManagerId()` / `proxyRelayPrefix()` 加入三个引擎、
-  `brokerStartupArgs` 传入新 proxy 路径、bridge 状态
-- 端口所有权比 LM Studio 简单得多：三个引擎都是 external 模式，PAIR 从不移动
-  它们的端口，所以不需要 `lmstudioport.go` 那 445 行的 facade/backend 端口腾挪
+bind 失败也因此语义不同：另外两个会换端口（它们想要的端口本就可能被真引擎合法
+占用），而这个 facade 的端口是用户客户端配置里的地址，悄悄换掉等于静默弄坏用户
+配置 —— 所以只报错，不回退。
+
+**实跑中发现并修掉的三个问题**：
+
+1. `proxyForEngine` 只映射 ollama/lmstudio，调度器的 `node/set-priority` 扇不到
+   新 facade。
+2. **转发不带引擎凭证**（最隐蔽的一个）。请求其实已正确路由到 oMLX，返回的 401
+   来自 oMLX 而非 PAIR —— 看起来像"路由没通"，实则"到了但没带钥匙"。新增
+   `authorizeLocal`，只在终点是本机引擎的两个跳注入，且仅当调用方没自带
+   Authorization。给对端注入本机凭证既泄露它，在那边也一样失败。
+3. 模型清单请求没有 model，推不出引擎导致注入被跳过。让 `soleHealthyBackend`
+   连同选中的引擎一起返回。
+
+**排查经验**：桌面默认以 `--log-level warn` 拉起 workers，`slog.Info` 全被压掉，
+一度让人误以为代码没执行。查这条链路要单独以 info/debug 跑 broker。
 
 ### 当前可用性
 
-PAIR 能发现、探活、列举三个引擎的模型，UI 能看到它们，`openai-proxy` 二进制
-已随构建产出。**但 broker 还不会启动它，所以推理请求还路由不过去** —— 那是 8b。
+**`:11436` 是可用的统一入口。** 实测：
+
+```
+GET  /v1/models            -> oMLX 的 4 个模型
+POST /v1/chat/completions  -> 真实回答，2.4s
+```
+
+vLLM / SGLang 的 manifest 就位，各自的引擎起来后会自动被纳入同一个入口。
 
 ### 阶段 3 — 集群落地（需单独确认后再做）
 
@@ -163,12 +180,11 @@ PAIR 能发现、探活、列举三个引擎的模型，UI 能看到它们，`op
 1. **阶段 3 要在两台 DGX 上装 PAIR** —— 这两台跑着生产 TTS。
    PAIR 会常驻多个服务进程并占用发现端口 14318。**这是对生产机的侵入，需你单独批准。**
    阶段 1、2 不触碰 DGX，只在 Mac 上做。
-2. **oMLX 的 API key** 是第一个可能突破「纯 manifest」的点（待办 5）。
-   若 manifest 无法声明认证头，需改 `ActionHTTP` —— 那是通用改动，三引擎受益。
-3. **adopt-only manifest 是未验证组合**（待办 3）。若 PAIR 要求 install 段存在，
-   需要改 registry 校验逻辑。
-4. **上游无 .git** —— 本仓库经 tarball 获取，改动无法 `git pull` 合并。
-   建议先 `git init` 建立基线，否则改动与未来上游版本无法区分。
+2. ~~oMLX 的 API key~~ —— 已解决：`ActionHTTP`/`Probe` 新增 headers + `{api_key}`
+   占位符；proxy 侧另有 `authorizeLocal` 负责转发时的凭证注入。
+3. ~~adopt-only 未验证~~ —— 已解决：新增 `external` 模式，实证可接管 oMLX 与 vLLM。
+4. **上游无 .git** —— 本仓库经 tarball 获取，基线 commit 记录了上游
+   `13b68115`，与上游对比以它为准（github 批量传输在本机不稳，无法 clone 历史）。
 5. 三个引擎的 `/v1/models` 返回的是**已加载**还是**可用**模型，各框架语义不同，
    可能影响 PAIR「优先路由到已持有模型的节点」的调度假设。
 
