@@ -438,3 +438,46 @@ func TestPromptDigestDoesNotLeakPromptText(t *testing.T) {
 		t.Fatal("digest is not stable for the same prompt")
 	}
 }
+
+// A plain OpenAI /v1/models response carries no capability field, so an
+// embedding model there used to be indistinguishable from a chat model — the
+// demo then sent it chat completions and collected HTTP 400s.
+func TestSupportsGenerationFallsBackToIDWhenUnannotated(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{
+		// Real ids from an oMLX node.
+		{"Qwen3-Embedding-4B-4bit-DWQ", false},
+		{"Qwen3-VL-Embedding-2B-4bit", false},
+		{"Qwen3.5-4B-MLX-4bit", true},
+		{"Qwen3.8-27B-4bit", true},
+		// Common ecosystem shapes.
+		{"text-embedding-ada-002", false},
+		{"nomic-embed-text-v1.5", false},
+		{"bge-reranker-v2-m3", false},
+		{"llama3.1:8b", true},
+		{"gpt-oss-20b", true},
+	} {
+		if got := supportsGeneration(RegisteredModel{Name: tc.name}); got != tc.want {
+			t.Errorf("supportsGeneration(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// Explicit metadata is authoritative: the id heuristic must never override an
+// engine that actually told us what the model is.
+func TestSupportsGenerationPrefersDeclaredMetadata(t *testing.T) {
+	// A declared llm keeps generating even with an embedding-looking id.
+	if !supportsGeneration(RegisteredModel{Name: "weird-embed-name", Type: "llm"}) {
+		t.Error("a declared type must win over the id heuristic")
+	}
+	// A declared embedding type is rejected even with a chat-looking id.
+	if supportsGeneration(RegisteredModel{Name: "qwen-chat", Type: "embeddings"}) {
+		t.Error("a declared non-llm type must be rejected")
+	}
+	// Declared capabilities also win over the id.
+	if !supportsGeneration(RegisteredModel{Name: "some-embed-thing", Capabilities: []string{"chat"}}) {
+		t.Error("declared capabilities must win over the id heuristic")
+	}
+}

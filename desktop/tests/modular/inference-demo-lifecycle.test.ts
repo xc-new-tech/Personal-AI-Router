@@ -141,6 +141,10 @@ function portOf(record: SpawnRecord): number {
     return Number(record.args[record.args.indexOf('--port') + 1])
 }
 
+function modelOf(record: SpawnRecord): string {
+    return record.args[record.args.indexOf('--model') + 1] ?? ''
+}
+
 beforeEach(() => {
     spawned.length = 0
     probeOptions.length = 0
@@ -234,6 +238,32 @@ describe('inference demo lifecycle', () => {
         expect(spawned.length).toBeGreaterThan(0)
         for (const child of spawned) {
             expect(portOf(child)).toBe(11436)
+        }
+    })
+
+    // Regression: a plain OpenAI /v1/models response carries no capability
+    // field, so embedding models used to pass the "no metadata, assume yes"
+    // check and collect HTTP 400s from every chat completion aimed at them.
+    it('does not target an embedding model that declares no capabilities', async () => {
+        inventory = [{ name: 'Qwen3-Embedding-4B-4bit-DWQ' }, { name: 'Qwen3.5-4B-MLX-4bit' }]
+        await startInferenceDemo()
+        await vi.advanceTimersByTimeAsync(70_000)
+
+        expect(spawned.length).toBeGreaterThan(0)
+        for (const child of spawned) {
+            expect(modelOf(child)).toBe('Qwen3.5-4B-MLX-4bit')
+        }
+    })
+
+    // The heuristic is only for the unannotated case; a declared type wins.
+    it('still targets a declared llm whose name looks like an embedding', async () => {
+        inventory = [{ name: 'weird-embed-name', type: 'llm' }]
+        await startInferenceDemo()
+        await vi.advanceTimersByTimeAsync(70_000)
+
+        expect(spawned.length).toBeGreaterThan(0)
+        for (const child of spawned) {
+            expect(modelOf(child)).toBe('weird-embed-name')
         }
     })
 

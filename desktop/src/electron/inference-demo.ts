@@ -119,13 +119,32 @@ function isDispatcherModel(value: unknown): value is DispatcherModel {
 }
 
 /**
- * Mirrors `supportsGeneration` in the Go client. An explicit type wins;
- * otherwise we look at capabilities; a model advertising neither is given the
- * benefit of the doubt, matching the binary's own behaviour.
+ * Ids that plainly denote an embedding or reranking model.
+ *
+ * This is a name heuristic, which is worth being uneasy about — but the plain
+ * OpenAI `/v1/models` envelope carries no capability field at all (oMLX returns
+ * only id/object/created/owned_by/max_model_len), so for an engine reached
+ * through the OpenAI facade there is nothing else to go on. LM Studio's native
+ * endpoint supplies a real `type`, and that still wins: this only decides the
+ * case that was previously an unconditional yes.
+ *
+ * Bounded deliberately: it matches the word only as a whole segment, so
+ * `Qwen3-Embedding-4B` and `text-embedding-ada-002` match while an ordinary
+ * chat model does not. A wrong guess costs a skipped demo target, whereas the
+ * previous blanket yes cost 18 failed requests per embedding model.
+ */
+const EMBEDDING_MODEL_ID = /(^|[-_./])(embed(dings?)?|rerank(er)?)([-_./]|$)/i
+
+/**
+ * Mirrors `supportsGeneration` in the Go client. An explicit type wins, then
+ * capabilities; a model advertising neither is given the benefit of the doubt
+ * unless its id plainly says it cannot generate text.
  */
 function isTextGenerationModel(model: DispatcherModel): boolean {
     if (model.type) return model.type.toLowerCase() === 'llm'
-    if (!model.capabilities || model.capabilities.length === 0) return true
+    if (!model.capabilities || model.capabilities.length === 0) {
+        return !EMBEDDING_MODEL_ID.test(model.name)
+    }
     return model.capabilities.some(capability =>
         ['completion', 'chat', 'generate'].includes(capability.toLowerCase())
     )

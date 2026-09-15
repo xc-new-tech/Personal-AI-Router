@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -309,12 +310,28 @@ func normalizedStrings(values []string) []string {
 	return out
 }
 
+// embeddingModelID matches ids that plainly denote an embedding or reranking
+// model.
+//
+// It is a name heuristic, which is worth being uneasy about — but the plain
+// OpenAI /v1/models envelope carries no capability field at all, so for a
+// backend reached that way there is nothing else to go on. LM Studio's native
+// endpoint supplies a real type, and that still wins: this only decides the
+// case that was previously an unconditional yes.
+//
+// Bounded deliberately: the word must be a whole segment, so
+// "Qwen3-Embedding-4B" and "text-embedding-ada-002" match while an ordinary
+// chat model does not.
+//
+// Keep in sync with isTextGenerationModel in desktop/src/electron/inference-demo.ts.
+var embeddingModelID = regexp.MustCompile(`(?i)(^|[-_./])(embed(dings?)?|rerank(er)?)([-_./]|$)`)
+
 func supportsGeneration(model RegisteredModel) bool {
 	if model.Type != "" {
 		return model.Type == "llm"
 	}
 	if len(model.Capabilities) == 0 {
-		return true
+		return !embeddingModelID.MatchString(model.Name)
 	}
 	for _, capability := range model.Capabilities {
 		if capability == "completion" || capability == "chat" || capability == "generate" {
