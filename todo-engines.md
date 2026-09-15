@@ -59,10 +59,11 @@
 - [x] 5. **API key 需要 Go 改动**（`ActionHTTP`/`Probe` 原无 header 字段）。
        已加 `headers` 字段 + `{api_key}` 占位符，从 `NVPAIR_<ENGINE>_API_KEY`
        在加载时解析，仓库内无明文
-- [ ] 6. `schedule.go:17` 的 `schedulerEngines` 加入三个新引擎 —— **未做**
-- [ ] 7. 前端常量（`EngineTypes` 等 5 处）—— **未做**
-- [ ] 8. `openai-proxy`（共享包 + 三个薄二进制）+ 构建脚本 + `versions.json` —— **未做，这是最大一块**
-- [ ] 9. PAIR UI 端到端 + 路由一次真实推理 —— **未做**
+- [x] 6. `schedule.go:17` 的 `schedulerEngines` 加入三个新引擎
+- [x] 7. 前端常量 + `EngineCapabilities` + `welcome`，外部引擎的安装/启停能力全部关闭
+- [ ] 8. `openai-proxy` —— **未做。见下方「proxy 的真实成本」，比原估算大一圈**
+- [x] 9a. PAIR 实跑：五引擎在列，oMLX `installed/running/healthy`，模型进入发现层
+- [ ] 9b. 路由一次真实推理 —— **未做，取决于第 8 项**
 
 ### 阶段 2 — vLLM / SGLang ◐ manifest 完成并部分实证
 
@@ -86,14 +87,37 @@
 | SGLang 接管 | ◐ 未实证 | manifest 同构，无可用实例 |
 | 多引擎聚合 | ✅ 实证 | `engine:models` 同时返回 omlx + vllm |
 
-**未完成（上层，阶段 1 的 6–9 项）**
+| 调度器白名单 | ✅ | 三引擎纳入同一份节点排名 |
+| 前端可见 + 能力开关 | ✅ 实证 | PAIR 实跑：五引擎在列，oMLX healthy |
+| broker 的 OpenAI 信封解析 | ✅ 实证 | 实跑发现并修复，失败计数归零 |
 
-调度器白名单、前端常量、`openai-proxy`、UI 端到端。其中 `openai-proxy` 是主要工作量：
-需从 `lmstudio-proxy` 抽出共享包（两个现有 proxy 除 `proxy.go` 外的 7 个文件去掉引擎名后
-差异仅 0–29 行），再写三个薄二进制并接入 `ui-broker` 的端口拓扑与 relay 命名空间映射。
+**实跑发现的 bug**：模型清单有**两个**解析器。engine-manager 走 manifest 的声明式
+`result` 抽取（已验证），但 broker 拿到的是引擎原始响应，由 `parseListModelNames`
+自己解析，而它只认 `{models:[{name|key}]}`。oMLX 因此报
+"list_models response is missing its model array"，尽管四个模型就在响应里。已修。
+**教训**：声明式抽取只覆盖了一条路径，另一条是手写的 —— 纸面推演发现不了，必须实跑。
 
-**这意味着**：现在 PAIR 的 engine-manager 已经能发现、探活、列举这三个引擎的模型，
-但 UI 还看不到它们、调度器还不会把请求路由给它们。
+## proxy 的真实成本（比原估算大一圈）
+
+原判断是「抽共享包 + 三个薄二进制」。实际读代码后，漏掉了**发现层**：
+
+- 服务键是固定枚举（`ol`/`lm`/`ni`/`em`/`ec`…），且通过**有大小限制的 mDNS TXT
+  记录**广播。对端要知道某引擎的端口，该引擎就得有自己的服务键。
+- 因此还需要：3 个新服务键 + advertiser 广播 + broker 的引擎端口登记 +
+  按「节点 × 引擎」建候选（同一节点上 oMLX:8123 与 vLLM:8000 是不同后端，
+  不能共用一个候选）+ `ui-broker` 的端口拓扑 + relay 命名空间映射。
+
+好消息是 proxy 本体几乎与引擎无关：`lmstudio-proxy` 里引擎特异的只有三处
+（`defaultProxyPort=1234`、`workloadEngine="lmstudio"`、`EngineModels("lmstudio")`），
+且 `workloadEngine` 仅用于 workload 归属元数据。
+
+**建议的设计**：三个引擎同说 OpenAI，应共用**一个** facade（一个 `openai-proxy`、
+一个 relay 前缀、一个端口），按模型名路由到持有该模型的节点与引擎 —— 而不是三个
+各自的 facade。这与「不接受跨量化路由」的决定天然吻合：模型名已按引擎/量化区分，
+按名路由自然落到正确的引擎。`noderec.EnginesModels` 已为此铺好路。
+
+**当前可用性**：PAIR 能发现、探活、列举三个引擎的模型，UI 能看到它们。
+**但还不能把推理请求路由给它们** —— 那需要第 8 项。
 
 ### 阶段 3 — 集群落地（需单独确认后再做）
 
