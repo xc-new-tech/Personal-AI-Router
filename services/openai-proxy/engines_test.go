@@ -101,25 +101,30 @@ func TestLocalBackendsArePerEngine(t *testing.T) {
 // from the wrong engine would serve a different model than the caller ranked.
 func TestSoleHealthyBackendGivesUpWhenAmbiguous(t *testing.T) {
 	p := &Proxy{}
-	if _, ok := p.soleHealthyBackend(); ok {
+	if _, _, ok := p.soleHealthyBackend(); ok {
 		t.Error("no backends must not resolve")
 	}
 
 	p.setLocalBackend(localBackend{Engine: "omlx", Port: 8123, Healthy: true})
-	u, ok := p.soleHealthyBackend()
+	u, engine, ok := p.soleHealthyBackend()
 	if !ok || u.Host != "127.0.0.1:8123" {
 		t.Fatalf("single healthy backend = %v/%v, want 127.0.0.1:8123", u, ok)
 	}
+	// The engine comes back too, so a model-list hop (which names no model and
+	// so cannot derive the engine from attribution) can still be authorized.
+	if engine != "omlx" {
+		t.Errorf("engine = %q, want omlx", engine)
+	}
 
 	p.setLocalBackend(localBackend{Engine: "vllm", Port: 8000, Healthy: true})
-	if _, ok := p.soleHealthyBackend(); ok {
+	if _, _, ok := p.soleHealthyBackend(); ok {
 		t.Error("two healthy backends must be reported ambiguous, not guessed")
 	}
 
 	// An unhealthy second backend is not a real choice, so the first one still wins.
 	p.setLocalBackend(localBackend{Engine: "vllm", Port: 8000, Healthy: false})
-	if u, ok := p.soleHealthyBackend(); !ok || u.Host != "127.0.0.1:8123" {
-		t.Errorf("unhealthy peer backend must not create ambiguity, got %v/%v", u, ok)
+	if u, engine, ok := p.soleHealthyBackend(); !ok || u.Host != "127.0.0.1:8123" || engine != "omlx" {
+		t.Errorf("unhealthy peer backend must not create ambiguity, got %v/%v/%v", u, engine, ok)
 	}
 }
 

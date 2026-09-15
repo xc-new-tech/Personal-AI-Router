@@ -153,6 +153,7 @@ type Broker struct {
 	nodeInfoPath      string
 	proxyPath         string
 	lmstudioProxyPath string
+	openaiProxyPath   string
 	workloadMgrPath   string
 	errorsPath        string
 	engineMgrPath     string
@@ -186,6 +187,8 @@ type Broker struct {
 	lmstudioProxyStartupPort         atomic.Int32
 	lmstudioProxyGeneration          atomic.Uint64
 	lmstudioProxyPublishedGeneration atomic.Uint64
+	openaiProxyGeneration            atomic.Uint64
+	openaiProxyPublishedGeneration   atomic.Uint64
 	lmstudioPortReady                chan struct{}
 	lmstudioPortReadyOnce            sync.Once
 	lmstudioReadyMu                  sync.Mutex
@@ -213,6 +216,7 @@ type Broker struct {
 	nodeInfo      *nodeInfoProcess
 	proxy         *proxyProcess
 	lmstudioProxy *proxyProcess
+	openaiProxy   *proxyProcess
 	workloadMgr   *workloadManagerProcess
 	errorsProc    *errorsProcess
 	engineMgr     *rpcWorker
@@ -228,6 +232,7 @@ type Broker struct {
 	nodeInfoSup      *supervisor
 	proxySup         *supervisor
 	lmstudioProxySup *supervisor
+	openaiProxySup   *supervisor
 	workloadMgrSup   *supervisor
 	errorsSup        *supervisor
 	engineMgrSup     *supervisor
@@ -244,14 +249,16 @@ type Broker struct {
 	subMu      sync.Mutex
 	subscribed bool
 
-	// proxyMu guards proxySubscribed and lmstudioProxySubscribed. The
-	// proxy:<event> / lmstudio-proxy:<event> streams are opt-in like
+	// proxyMu guards proxySubscribed, lmstudioProxySubscribed and
+	// openaiProxySubscribed. The proxy:<event> / lmstudio-proxy:<event> /
+	// openai-proxy:<event> streams are opt-in like
 	// discovery's: the forward*Notification hooks (on each proxy's reader
 	// goroutine) read the flags while the *:subscribe / *:unsubscribe
 	// handlers (on the read-loop goroutine) flip them.
 	proxyMu                 sync.Mutex
 	proxySubscribed         bool
 	lmstudioProxySubscribed bool
+	openaiProxySubscribed   bool
 
 	// workloadsMu guards workloadsSubscribed. The workloads:* stream is
 	// opt-in too: emitWorkloadEvent (called on the proxy reader goroutine
@@ -330,6 +337,7 @@ type workerPaths struct {
 	nodeInfo      string
 	proxy         string
 	lmstudioProxy string
+	openaiProxy   string
 	workloadMgr   string
 	errors        string
 	engineMgr     string
@@ -369,6 +377,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		nodeInfoPath:       paths.nodeInfo,
 		proxyPath:          paths.proxy,
 		lmstudioProxyPath:  paths.lmstudioProxy,
+		openaiProxyPath:    paths.openaiProxy,
 		workloadMgrPath:    paths.workloadMgr,
 		errorsPath:         paths.errors,
 		engineMgrPath:      paths.engineMgr,
@@ -509,11 +518,13 @@ func (b *Broker) runEngineAvailabilityAfterPortGates(
 	ctx context.Context,
 	runOllama func(context.Context),
 	runLMStudio func(context.Context),
+	runOpenAI func(context.Context),
 ) bool {
 	if !b.restoreEnabledEnginesAfterPortGate(ctx) {
 		return false
 	}
 	go runOllama(ctx)
+	go runOpenAI(ctx)
 	runLMStudio(ctx)
 	return true
 }
@@ -1458,12 +1469,19 @@ func (b *Broker) cachePrioritySnapshot(engine string, priority schedulerwire.Pri
 }
 
 // proxyForEngine returns the supervised proxy that serves an engine, or nil.
+//
+// The OpenAI-speaking engines all map to the one facade that fronts them, so it
+// receives the same snapshot once per engine. That is redundant but not wrong:
+// the scheduler gives every engine the same node-wide ranking (see
+// schedulerEngines), so the repeated writes carry identical content.
 func (b *Broker) proxyForEngine(engine string) *proxyProcess {
 	switch engine {
 	case "ollama":
 		return b.getProxy()
 	case "lmstudio":
 		return b.getLMStudioProxy()
+	case "omlx", "vllm", "sglang":
+		return b.getOpenAIProxy()
 	default:
 		return nil
 	}
@@ -1775,11 +1793,29 @@ func (b *Broker) Serve(ctx context.Context) error {
 		b.finishLMStudioProxyTerminal()
 	}
 
+	// The OpenAI facade. Unlike its two siblings it takes part in no port
+	// ownership gate: the engines behind it are externally managed, so it never
+	// has to move an engine out of the way, and its own port is PAIR's rather
+	// than an engine's well-known one.
+	if b.openaiProxyPath != "" {
+		b.openaiProxySup = newSupervisor("openai-proxy", defaultRestartPolicy(), b.spawnOpenAIProxy)
+		b.configureOpenAIProxySupervisorCallbacks(b.openaiProxySup)
+		if err := b.openaiProxySup.Start(); err != nil {
+			slog.Warn("openai-proxy failed to start; continuing without OpenAI-compatible routing",
+				"path", b.openaiProxyPath, "err", err)
+			b.openaiProxySup = nil
+		} else {
+			defer b.openaiProxySup.Stop()
+		}
+	} else {
+		slog.Info("openai-proxy path not resolved; running without OpenAI-compatible routing")
+	}
+
 	// Restore engines and begin both advertising loops only after both proxy
 	// startup attempts have established either readiness or a terminal outcome.
 	// This prevents a restored engine from taking a persisted proxy port before
 	// the broker can resolve ownership.
-	go b.runEngineAvailabilityAfterPortGates(ctx, b.runAutoAdvertise, b.runAutoAdvertiseLMStudio)
+	go b.runEngineAvailabilityAfterPortGates(ctx, b.runAutoAdvertise, b.runAutoAdvertiseLMStudio, b.runAutoAdvertiseOpenAI)
 
 	// nvpair-workload-manager is another auxiliary worker: it relays local
 	// workload lifecycle events to peer nodes and surfaces peer events
@@ -2861,6 +2897,43 @@ func (b *Broker) handleMessage(msg *Message) {
 			log.Printf("failed to respond to lmstudio-proxy:unsubscribe: %v", err)
 		}
 
+	case "openai-proxy:get-status":
+		var result ProxyStatusResult
+		if p := b.getOpenAIProxy(); p != nil {
+			ready, port := p.Status()
+			result.Ready = ready
+			result.Port = port
+		}
+		if err := b.codec.Respond(msg.ID, result); err != nil {
+			log.Printf("failed to respond to openai-proxy:get-status: %v", err)
+		}
+
+	case "openai-proxy:subscribe":
+		b.proxyMu.Lock()
+		wasSubscribed := b.openaiProxySubscribed
+		b.openaiProxySubscribed = true
+		b.proxyMu.Unlock()
+		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: true}); err != nil {
+			log.Printf("failed to respond to openai-proxy:subscribe: %v", err)
+		}
+		if !wasSubscribed {
+			if p := b.getOpenAIProxy(); p != nil {
+				if rp := p.ReadyParams(); rp != nil {
+					if err := b.codec.Notify("openai-proxy:ready", rp); err != nil {
+						slog.Warn("emit baseline openai-proxy:ready failed", "err", err)
+					}
+				}
+			}
+		}
+
+	case "openai-proxy:unsubscribe":
+		b.proxyMu.Lock()
+		b.openaiProxySubscribed = false
+		b.proxyMu.Unlock()
+		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: false}); err != nil {
+			log.Printf("failed to respond to openai-proxy:unsubscribe: %v", err)
+		}
+
 	case "workloads:subscribe":
 		b.workloadsMu.Lock()
 		b.workloadsSubscribed = true
@@ -2945,6 +3018,10 @@ func (b *Broker) handleMessage(msg *Message) {
 		// first makes the LM Studio namespace explicit.
 		if strings.HasPrefix(msg.Method, "lmstudio-proxy:") {
 			b.relayToLMStudioProxy(msg)
+			return
+		}
+		if strings.HasPrefix(msg.Method, "openai-proxy:") {
+			b.relayToOpenAIProxy(msg)
 			return
 		}
 		if strings.HasPrefix(msg.Method, "proxy:") {

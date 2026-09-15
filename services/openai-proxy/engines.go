@@ -5,6 +5,8 @@ package main
 
 import (
 	"net/http"
+	"os"
+	"strings"
 
 	"nvpair-shared/noderec"
 )
@@ -64,6 +66,46 @@ func engineForModel(n Node, model string) string {
 		}
 	}
 	return ""
+}
+
+// engineAPIKeyEnv is the environment variable an engine's credential is read
+// from, matching nvpair-engine-manager's convention exactly:
+// NVPAIR_<ENGINE>_API_KEY, upper-cased, non-alphanumerics folded to "_".
+func engineAPIKeyEnv(engine string) string {
+	var b strings.Builder
+	b.WriteString("NVPAIR_")
+	for _, r := range strings.ToUpper(engine) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	b.WriteString("_API_KEY")
+	return b.String()
+}
+
+// authorizeLocal attaches this node's credential for engine to a request being
+// forwarded to a *local* backend.
+//
+// Only local: a peer authenticates with its own engine's credential, so sending
+// ours to a peer would leak it and still fail there. The proxy therefore adds it
+// on exactly the two hops that terminate at this node's own engine.
+//
+// An Authorization the caller already set is left alone, so a client that
+// manages the engine credential itself keeps working.
+//
+// The credential is read from the environment, never from disk or config: it is
+// the same secret nvpair-engine-manager probes with, and keeping it to one
+// injection point makes the facade's loopback-only plaintext gate the thing that
+// protects it.
+func authorizeLocal(r *http.Request, engine string) {
+	if engine == "" || r.Header.Get("Authorization") != "" {
+		return
+	}
+	if key := strings.TrimSpace(os.Getenv(engineAPIKeyEnv(engine))); key != "" {
+		r.Header.Set("Authorization", "Bearer "+key)
+	}
 }
 
 // engineFromRequest reads the engine a forwarding proxy selected, returning ""

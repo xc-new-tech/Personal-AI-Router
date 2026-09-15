@@ -714,6 +714,10 @@ type candidate struct {
 	// the same engine this ranking decision was made against, and it is the
 	// engine reported in the workload record.
 	engine string
+	// local marks a candidate that resolves to this node's own loopback engine
+	// rather than a peer. Only a local hop may carry this node's engine
+	// credential — see authorizeLocal.
+	local bool
 }
 
 // candidateTransport returns the reverse-proxy / model-list transport for a
@@ -848,6 +852,12 @@ func (p *Proxy) serveModelList(w http.ResponseWriter, r *http.Request, candidate
 			continue
 		}
 		upstream.Header.Set("Accept", "application/json")
+		// The model list is fetched from the engine itself, so a guarded engine
+		// rejects it exactly like an inference call would — and a 401 here reads
+		// as "this node has no models" rather than "this node needs a key".
+		if cand.local {
+			authorizeLocal(upstream, cand.engine)
+		}
 
 		// A cluster-peer candidate is queried over mTLS to its promoted proxy;
 		// self/manual candidates use the shared plain client.
@@ -1160,6 +1170,11 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				if cand.engine != "" {
 					req.Header.Set(engineHeader, cand.engine)
 				}
+				// Only a hop terminating at this node's own engine may carry
+				// this node's credential; a peer has its own.
+				if cand.local {
+					authorizeLocal(req, cand.engine)
+				}
 			},
 			// A remote cluster peer is dialed over mTLS (per-peer pinned config);
 			// self/manual candidates use the plain transport. See candidateTransport.
@@ -1414,6 +1429,7 @@ func (p *Proxy) resolveCandidates(model string) []candidate {
 		// unknown and falls back rather than assuming an engine.
 		engine := engineForModel(n, model)
 		peerUUID := ""
+		isLocal := false
 		switch {
 		case isSelfTarget(u, selfPort):
 			// Our own advertised endpoint (oa now points at this proxy). Serve
@@ -1429,7 +1445,10 @@ func (p *Proxy) resolveCandidates(model string) []candidate {
 			if engine != "" {
 				lb, ok = p.localBackendFor(engine)
 			} else {
-				lb, ok = p.soleHealthyBackend()
+				// No model (a model-list request) or no attribution: fall back
+				// to the unambiguous backend and adopt its engine, so the hop
+				// can still be labeled and authorized.
+				lb, engine, ok = p.soleHealthyBackend()
 			}
 			if !ok {
 				slog.Debug("resolveCandidates: no local backend for self",
@@ -1437,6 +1456,7 @@ func (p *Proxy) resolveCandidates(model string) []candidate {
 				return
 			}
 			u = lb
+			isLocal = true
 		case p.mesh.HasPin(n.ClusterUUID):
 			// A pinned cluster peer: reach it only over mTLS to its promoted
 			// proxy (the lm port now advertises the proxy, not the engine).
@@ -1475,6 +1495,7 @@ func (p *Proxy) resolveCandidates(model string) []candidate {
 			url:      u,
 			peerUUID: peerUUID,
 			engine:   engine,
+			local:    isLocal,
 		})
 	}
 

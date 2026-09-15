@@ -75,10 +75,14 @@ func (p *Proxy) localBackendFor(engine string) (*url.URL, bool) {
 // request arriving without the engine header (an older peer). Guessing between
 // two engines could answer from the wrong model, so this deliberately gives up
 // when the choice is ambiguous rather than picking arbitrarily.
-func (p *Proxy) soleHealthyBackend() (*url.URL, bool) {
+// It also returns which engine that backend is, so the caller can label the
+// candidate and authorize the hop — a model-list request names no model, so the
+// engine cannot be derived from attribution there.
+func (p *Proxy) soleHealthyBackend() (*url.URL, string, bool) {
 	p.backendMu.RLock()
 	defer p.backendMu.RUnlock()
 	var found *url.URL
+	foundEngine := ""
 	for _, engine := range openaiEngines {
 		b, ok := p.backends[engine]
 		if !ok {
@@ -89,11 +93,11 @@ func (p *Proxy) soleHealthyBackend() (*url.URL, bool) {
 			continue
 		}
 		if found != nil {
-			return nil, false
+			return nil, "", false
 		}
-		found = u
+		found, foundEngine = u, engine
 	}
-	return found, found != nil
+	return found, foundEngine, found != nil
 }
 
 // handlePlain is the plaintext personality: it accepts requests only from
@@ -148,36 +152,41 @@ func (p *Proxy) handleClusterIngress(w http.ResponseWriter, r *http.Request) {
 	// healthy backend only when that is unambiguous (see soleHealthyBackend).
 	var target *url.URL
 	var haveTarget bool
-	if engine := engineFromRequest(r); engine != "" {
+	ingressEngine := engineFromRequest(r)
+	if engine := ingressEngine; engine != "" {
 		target, haveTarget = p.localBackendFor(engine)
 		if !haveTarget {
 			writeIngressError(w, http.StatusServiceUnavailable, "no-local-backend",
 				"the requested engine is not available on this node")
 			return
 		}
-	} else if target, haveTarget = p.soleHealthyBackend(); !haveTarget {
+	} else if target, ingressEngine, haveTarget = p.soleHealthyBackend(); !haveTarget {
 		writeIngressError(w, http.StatusServiceUnavailable, "no-local-backend",
 			"no local inference backend is available on this node")
 		return
 	}
 	slog.Debug("cluster ingress forwarding to local backend",
 		"peer", peer, "method", r.Method, "path", r.URL.Path, "target", target.Host)
-	p.reverseProxyToLocal(w, r, target)
+	// This hop terminates at our own engine, so it carries our credential. The
+	// caller is already proven to be a pinned cluster member by the mTLS gate
+	// above, which is what makes adding it here safe.
+	p.reverseProxyToLocal(w, r, target, ingressEngine)
 }
 
 // reverseProxyToLocal streams the request to the local engine, preserving
 // cancellation (the request context is the proxy's root context, so a client
 // disconnect or shutdown tears down the upstream call and stops generation).
-func (p *Proxy) reverseProxyToLocal(w http.ResponseWriter, r *http.Request, target *url.URL) {
-	p.newLocalReverseProxy(target).ServeHTTP(w, r)
+func (p *Proxy) reverseProxyToLocal(w http.ResponseWriter, r *http.Request, target *url.URL, engine string) {
+	p.newLocalReverseProxy(target, engine).ServeHTTP(w, r)
 }
 
-func (p *Proxy) newLocalReverseProxy(target *url.URL) *httputil.ReverseProxy {
+func (p *Proxy) newLocalReverseProxy(target *url.URL, engine string) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.Host = target.Host
+			authorizeLocal(req, engine)
 		},
 		Transport: p.plainHTTPTransport(),
 		ErrorHandler: func(ew http.ResponseWriter, _ *http.Request, err error) {

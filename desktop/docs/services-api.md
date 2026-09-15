@@ -266,6 +266,7 @@
 - `method (var)  (clustermanager.go)`
 - `method (var)  (errors.go)`
 - `lmstudio-proxy:*  (lmstudioproxy.go)`
+- `openai-proxy:*  (openaiproxy.go)`
 - `method (var)  (proxy.go)`
 - `method (var)  (rpcworker.go, 2 sites)`
 

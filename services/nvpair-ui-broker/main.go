@@ -26,6 +26,7 @@ func main() {
 	nodeInfoPath := flag.String("node-info-path", "", "path to nvpair-node-info binary (default: ./nvpair-node-info in the current working directory)")
 	proxyPath := flag.String("proxy-path", "", "path to ollama-proxy binary (default: ./ollama-proxy in the current working directory)")
 	lmstudioProxyPath := flag.String("lmstudio-proxy-path", "", "path to lmstudio-proxy binary (default: ./lmstudio-proxy in the current working directory)")
+	openaiProxyPath := flag.String("openai-proxy-path", "", "path to openai-proxy binary (default: ./openai-proxy in the current working directory)")
 	workloadMgrPath := flag.String("workload-manager-path", "", "path to nvpair-workload-manager binary (default: ./nvpair-workload-manager in the current working directory)")
 	errorsPath := flag.String("errors-path", "", "path to nvpair-errors binary (default: ./nvpair-errors in the current working directory)")
 	engineMgrPath := flag.String("engine-manager-path", "", "path to nvpair-engine-manager binary (default: ./nvpair-engine-manager in the current working directory)")
@@ -134,6 +135,18 @@ func main() {
 		}
 		slog.Warn("lmstudio-proxy binary not found; broker will run without local LM Studio proxy", "err", err)
 		resolvedLMStudioProxy = ""
+	}
+
+	// openai-proxy is auxiliary on the same terms: an explicit
+	// --openai-proxy-path that doesn't exist is a loud operator mistake, while
+	// an absent default sibling just means no OpenAI-compatible routing.
+	resolvedOpenAIProxy, err := resolveOpenAIProxyPath(*openaiProxyPath)
+	if err != nil {
+		if *openaiProxyPath != "" {
+			fatalf("openai-proxy binary: %v", err)
+		}
+		slog.Warn("openai-proxy binary not found; broker will run without OpenAI-compatible routing", "err", err)
+		resolvedOpenAIProxy = ""
 	}
 
 	// nvpair-workload-manager is auxiliary too, resolved with the same rules:
@@ -253,6 +266,7 @@ func main() {
 		nodeInfo:      resolvedNodeInfo,
 		proxy:         resolvedProxy,
 		lmstudioProxy: resolvedLMStudioProxy,
+		openaiProxy:   resolvedOpenAIProxy,
 		workloadMgr:   resolvedWorkloadMgr,
 		errors:        resolvedErrors,
 		engineMgr:     resolvedEngineMgr,
@@ -318,6 +332,13 @@ func resolveProxyPath(override string) (string, error) {
 // Studio proxy" rather than aborting the broker.
 func resolveLMStudioProxyPath(override string) (string, error) {
 	return resolveSiblingBinary(override, "lmstudio-proxy", "--lmstudio-proxy-path")
+}
+
+// resolveOpenAIProxyPath mirrors resolveLMStudioProxyPath for the openai-proxy
+// binary. Optional at the call site for the same reason: a missing default
+// sibling degrades to "no OpenAI-compatible routing" rather than aborting.
+func resolveOpenAIProxyPath(override string) (string, error) {
+	return resolveSiblingBinary(override, "openai-proxy", "--openai-proxy-path")
 }
 
 // resolveWorkloadManagerPath mirrors resolveProxyPath for the
